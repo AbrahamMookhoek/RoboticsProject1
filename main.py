@@ -1,15 +1,22 @@
 #!/usr/bin/env pybricks-micropython
+import time
+import math
 from pybricks.hubs import EV3Brick
 from pybricks.ev3devices import (Motor, GyroSensor)
 from pybricks.parameters import Port, Stop, Direction, Button, Color
 from pybricks.tools import wait, StopWatch, DataLog
 
+# Create your objects here.
+ev3 = EV3Brick()
+left_motor = Motor(Port.A)
+right_motor = Motor(Port.D)
+gyro_sensor = GyroSensor(Port.S1)
 
-start = [0.305, 1.219] # start location
-goal = [3.658, 1.829]  # goal location
+start = [0.305, 1.219] # Start location
+goal = [3.658, 1.829]  # Goal location
 
-MAX_OBSTACLES = 25     # maximum number of obstacles 
-num_obstacles = 13     # number of obstacles 
+MAX_OBSTACLES = 25     # Maximum number of obstacles 
+num_obstacles = 13     # Number of obstacles 
 obstacle_indices = []
 obstacle = [
 [0.61, 2.743],[0.915, 2.743],[1.219, 2.743],[1.829, 1.219],
@@ -20,174 +27,393 @@ obstacle = [
 [-1,-1],[-1,-1],[-1,-1]
 ]
 
+
+# Node class used to track the order in which a path is found during A*
 class Node:
-    def __init__(self, index, parent):
-        self.index = index
+    def __init__(self, index, parent, g=0, h=0):
+        self.index = index # [x, y]
         self.parent = parent
+        self.g = g # Cost from start
+        self.h = h # Heuristic to goal
+        self.f = g + h # Total cost
 
-    def expand(self):
+    # Compare nodes
+    def __eq__(self, other):
+        if isinstance(other, Node):
+            return self.index == other.index
+        return False
+    
+    # Sort fringe
+    def __lt__(self, other):
+        return self.f < other.f
+    
+    # Use for sets/dictionaries
+    def __hash__(self):
+        return hash(tuple(self.index))
+
+    # Find & return children of current node
+    def expand(self, goal_index):
         childList = []
-
-        if(self.index[0] == 0):
-            childList.append(Node([1,self.index[1]], self))
-        elif(self.index[0] == 15):
-            childList.append(Node([14,self.index[1]], self))
-        elif(self.index[0] in range(1,15)):
-            childList.append(Node([self.index[0]+1,self.index[1]], self))
-            childList.append(Node([self.index[0]-1,self.index[1]], self))
+        x, y = self.index
         
-        if(self.index[1] == 0):
-            childList.append(Node([self.index[0],1], self))
-        elif(self.index[1] == 9):
-            childList.append(Node([self.index[0],8], self))
-        elif(self.index[1] in range(1,9)):
-            childList.append(Node([self.index[0],self.index[1]+1], self))
-            childList.append(Node([self.index[0],self.index[1]-1], self))
+        # List of possible neighbor indices [nx, ny]
+        possible_indices = []
+        # Check grid boundaries (0-15 for x, 0-9 for y)
+        if x > 0:  possible_indices.append([x - 1, y]) # Left
+        if x < 15: possible_indices.append([x + 1, y]) # Right
+        if y > 0:  possible_indices.append([x, y - 1]) # Down
+        if y < 9:  possible_indices.append([x, y + 1]) # Up
+        
+        for idx in possible_indices:
+            # Create a new node for each valid neighbor
+            childList.append(Node(idx, self, self.g+1, heuristic(idx, goal_index)))
         
         return childList
 
+
+# Heuristic function (Manhattan distance)
+def heuristic(a, b):
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+# A* search
 def graph_search():
-    fringe = [Node([round(start[0]/0.305),round(start[1]/0.305)], None)]
-    closed = []
+    # Define start and goal indices from global variables
+    start_index = [round(start[0]/0.305), round(start[1]/0.305)]
+    goal_index = [round(goal[0]/0.305), round(goal[1]/0.305)]
 
-    while(len(fringe) > 0):
-        currentNode = fringe.pop()
- 
-        if(currentNode.index not in obstacle_indices):
-            if(currentNode.index not in closed):
-                closed.append(currentNode.index)
+    # Create start node: g=0, h=heuristic(start, goal)
+    start_node = Node(start_index, None, 0, heuristic(start_index, goal_index))
 
-                if(currentNode.index == [round(goal[0]/0.305),round(goal[1]/0.305)]):
-                    return currentNode
-                
-                childList = currentNode.expand()
-                for child in childList:
-                    fringe.insert(0,child)
+    # Fringe begins with only the start node
+    fringe = [start_node]
     
-    return Node(start, None)
+    # Closed set created as a set of tuples for fast lookups
+    closed_set = set()
+
+    # while fringe not empty
+    while len(fringe) > 0:
+        # Sort fringe to get node with lowest cost
+        fringe.sort()
+
+        # Pop node from front of list
+        currentNode = fringe.pop(0)
+
+        # Check if node is goal
+        if currentNode.index == goal_index:
+            return currentNode # Return goal
+
+        # Add index to closed set
+        closed_set.add(tuple(currentNode.index))
+
+        # Expand node to get children
+        childList = currentNode.expand(goal_index)
+        
+        for child in childList:
+            # Check if child is an obstacle
+            if child.index in obstacle_indices:
+                continue
             
+            # Check if child is in closed set
+            if tuple(child.index) in closed_set:
+                continue
+
+            # Check if child is in fringe
+            in_fringe = False
+            for node_in_fringe in fringe:
+                if node_in_fringe.index == child.index:
+                    in_fringe = True
+                    # If new path to child is shorter, update the node in fringe
+                    if child.g < node_in_fringe.g:
+                        node_in_fringe.g = child.g
+                        node_in_fringe.f = child.f
+                        node_in_fringe.parent = currentNode
+                    break # Stop searching fringe
+
+            # If not in fringe, add child
+            if not in_fringe:
+                fringe.append(child)
+    
+    # return start if path not found
+    return Node(start, None)
+
+
+def correct_left_turn():
+    # NEGATIVE ANGLE CORRECTOR    
+    # Calculating the angle, and the offset we must correct
+    cur_ang = gyro_sensor.angle() / 90
+    ang_dec, ang_whole = math.modf(cur_ang)
+    print(str(ang_dec) + str(ang_whole))
+
+    # Did not go far enough
+    if abs(ang_dec) > .5:
+        desired_angle = (ang_whole * 90) - 90 
+
+    # Went to far
+    elif abs(ang_dec) <= .5:
+        desired_angle = (ang_whole * 90) - 0 
+
+    else:
+        print("perfect turn")
+
+    print("Desired Angle " + str(desired_angle))
+    while gyro_sensor.angle() != desired_angle:
+        if gyro_sensor.angle() < desired_angle:
+            while gyro_sensor.angle() < desired_angle:
+                # Turn the motors LEFT really slowly until it reaches desired_angle
+                print("Angle " + str(gyro_sensor.angle()))
+                left_motor.run(50)
+                right_motor.run(-50)
+                #left_motor.run_angle(100, -1.7, wait=False)
+                #right_motor.run_angle(1000, 1.7, wait=True)
+            left_motor.stop()
+            right_motor.stop()
+            time.sleep(.01)
+
+        else:
+            while gyro_sensor.angle() > desired_angle:
+                # Turn the motors RIGHT really slowly until it reaches 90
+                print("Angle  " + str(gyro_sensor.angle()))
+                left_motor.run(-50)
+                right_motor.run(50)
+                #left_motor.run_angle(100, 1.7, wait=False)
+                #right_motor.run_angle(1000, -1.7, wait=True)
+            left_motor.stop()
+            right_motor.stop()
+            time.sleep(.01)
+
+    print("Angle has been corrected to " + str(gyro_sensor.angle()))
+
+
+def correct_right_turn():
+    # POSITIVE ANGLE CORRECTOR    
+    # Calculating the angle, and the offset we must correct
+    cur_ang = gyro_sensor.angle() / 90
+    ang_dec, ang_whole = math.modf(cur_ang)
+    print(str(ang_dec) + str(ang_whole))
+
+
+    # Did not go far enough
+    if abs(ang_dec) > .5:
+        desired_angle = (ang_whole * 90) + 90
+
+    # Went to far
+    elif abs(ang_dec) <= .5:
+        desired_angle = (ang_whole * 90) + 0
+
+    else:
+        print("perfect turn")
+
+    print("Desired Angle " + str(desired_angle))
+
+    while gyro_sensor.angle() != desired_angle:
+        # If the angle is larger than 90, move back
+        if gyro_sensor.angle() > desired_angle:
+            while gyro_sensor.angle() > desired_angle:
+                # Turn the motors LEFT really slowly until it reaches desired_angle
+                print("Angle greater than " + str(desired_angle))
+                left_motor.run(-100)
+                right_motor.run(100)
+            left_motor.stop()
+            right_motor.stop()
+            time.sleep(.01)
+
+        # Else if the angle is smaller than 90, move forward
+        else:
+            while gyro_sensor.angle() < desired_angle:
+                # Turn the motors RIGHT really slowly until it reaches 90
+                print("Angle less than " + str(desired_angle))
+                left_motor.run(100)
+                right_motor.run(-100)
+            left_motor.stop()
+            right_motor.stop()
+            time.sleep(.01)
+    
+    print("Angle has been corrected to " + str(gyro_sensor.angle()))
+
+
+def angle_correction():
+    if gyro_sensor.angle() < 0:
+        correct_left_turn()
+    
+    elif gyro_sensor.angle() > 0:
+        correct_right_turn()
+    time.sleep(1)
+
+
+def move_forward(distance):
+    dgpd = 360 / (.1725 * .99) 
+    right_motor.run_angle(200, distance*dgpd, wait=False)
+    left_motor.run_angle(200, distance*dgpd, wait=True)
+    time.sleep(1)
+
+
+def right_turn():
+    # TURN 90 DEGREES TO THE RIGHT
+    curAngle = gyro_sensor.angle() 
+    
+    while gyro_sensor.angle() < (curAngle + 90):
+        print("Gyro Sensor Angle " + str(gyro_sensor.angle()))
+        print("Right Motor Angle " + str(right_motor.angle()))
+        left_motor.run(100)
+        right_motor.run(-100)
+    left_motor.stop()
+    right_motor.stop()
+    time.sleep(1)
+
+
+def left_turn():
+    # TURN 90 DEGREES TO THE LEFT
+    curAngle = gyro_sensor.angle() 
+
+    while gyro_sensor.angle() > (curAngle - 90):
+       print("Gyro Sensor Angle " + str(gyro_sensor.angle()))
+       print("Right Motor Angle " + str(right_motor.angle()))
+       left_motor.run(-100)
+       right_motor.run(100)
+    left_motor.stop()
+    right_motor.stop()
+    time.sleep(1)
+
+
+# Work in progress, but this should return the robot to its original orientation, i.e., the starting angle
+def original_orientation(org_angle):
+    curAngle = gyro_sensor.angle() 
+    delta_angle = (curAngle - org_angle)
+    # If change in angle is negative, turn right
+    if delta_angle < 0:
+        # while loop until angle is 0
+        while (delta_angle < 0):
+            right_turn()
+            # This could be done differently, probably should involve the current angle
+            delta_angle = delta_angle + 90
+
+    # If change in angle is positive, turn left
+    else:
+        # while loop until angle is 0
+        while (delta_angle > 0):
+            left_turn()
+            # This could be done differently, probably should involve the current angle
+            delta_angle = delta_angle - 90
+
 
 def main():
     # This program requires LEGO EV3 MicroPython v2.0 or higher.
     # Click "Open user guide" on the EV3 extension tab for more information.
 
+    # create workspace and populate with obstacles
     workspace = [[0]*16]*10
 
+    # populate obstacle indices
+    for idx in range(0,num_obstacles):
+        x = round((obstacle[idx][0])/0.305)
+        y = round((obstacle[idx][1])/0.305)
+
+        obstacle_indices.append([x,y])
+        obstacle_indices.append([x-1,y])
+        obstacle_indices.append([x,y-1])
+        obstacle_indices.append([x-1,y-1])
+
+    # populate workspace costs
     for y in range(0,10):
         for x in range(0,16):
-            for index in range(0,num_obstacles):
-                if( (x == round((obstacle[index][0])/0.305)) and (y == round((obstacle[index][1])/0.305)) ):
-                    obstacle_indices.append([round((obstacle[index][0])/0.305),round((obstacle[index][1])/0.305)])
-                    obstacle_indices.append([round((obstacle[index][0])/0.305)-1,round((obstacle[index][1])/0.305)])
-                    obstacle_indices.append([round((obstacle[index][0])/0.305),round((obstacle[index][1])/0.305)-1])
-                    obstacle_indices.append([round((obstacle[index][0])/0.305)-1,round((obstacle[index][1])/0.305)-1])
-                    workspace[round((obstacle[index][1])/0.305)][round((obstacle[index][0])/0.305)] = 1000
-                    workspace[round((obstacle[index][1])/0.305)][round((obstacle[index][0])/0.305)-1] = 1000
-                    workspace[round((obstacle[index][1])/0.305)-1][round((obstacle[index][0])/0.305)] = 1000
-                    workspace[round((obstacle[index][1])/0.305)-1][round((obstacle[index][0])/0.305)-1] = 1000
-                else:
-                    workspace[y][x] = (abs(x - goal[0]) + abs(y - goal[1]))
+            if([x,y] in obstacle_indices):
+                workspace[y][x] = 1000
+            else:
+                workspace[y][x] = (abs(x - goal[0]) + abs(y - goal[1]))
+    
 
+    # Run A* to find path to goal
     goalNode = graph_search()
     found_path = []
 
+    # place path to goal into found_path
     while(goalNode.parent != None):
         found_path.insert(0,goalNode.index)
         goalNode = goalNode.parent
     found_path.insert(0,goalNode.index)
 
+    # If the found_path is the given start, exit
+    if(found_path[0] == start):
+        print("No path to the goal exists.")
+        return
+
+    # trim path by only including indices for the start, end, and turns
+    simplified_path = [found_path[0]]
+    for step1 in range(1,len(found_path)):
+        if(found_path[step1][0] == found_path[step1-1][0]):
+            for step2 in range(step1,len(found_path)):
+                if(found_path[step2][0] != found_path[step2-1][0]):
+                    if(found_path[step2-1] not in simplified_path):
+                        simplified_path.append(found_path[step2-1])
+                    break
+        elif(found_path[step1][1] == found_path[step1-1][1]):
+            for step2 in range(step1,len(found_path)):
+                if(found_path[step2][1] != found_path[step2-1][1]):
+                    if(found_path[step2-1] not in simplified_path):
+                        simplified_path.append(found_path[step2-1])
+                    break  
+        if( (step1 == len(found_path)-1) and (found_path[step1] not in simplified_path) ):
+            simplified_path.append(found_path[step1])
+
+    print("Pathfinding Information:")
     for item in found_path:
         print(item)
+    print()
+    for item in simplified_path:
+        print(item)
+    print()
 
-    # Create your objects here.
-    ev3 = EV3Brick()
-    left_motor = Motor(Port.A)
-    right_motor = Motor(Port.D)
-    gyro_sensor = GyroSensor(Port.S4)
+    # # setup variables used for optometry, angle 0 is to the world-frame direction of right
+    # current_location = [simplified_path[0][0]*0.305,simplified_path[0][1]*0.305]
+    # current_orientation = gyro_sensor.angle()
+    # desired_distance = 0
+    # desired_angle = 0
+    # print("Location: ",current_location)
+    # print("Orientation: ",current_orientation)
 
-    # Resetting the angle to 0 for the gyro sensor
-    gyro_sensor.reset_angle(0)
-    # Can check if the gyro_sensor.angle() and .speed() is zero before going forward which could be useful.
-
-    # Turning left
-    #while gyro_sensor.angle() != -50:
-    #    print("Gyro Sensor Angle " + str(gyro_sensor.angle()))
-    #    print("Right Motor Angle " + str(right_motor.angle()))
-    #    right_motor.run(100)
-    #right_motor.stop()
-
-    # Turning right
-    #while gyro_sensor.angle() != 50:
-    #    print("Gyro Sensor Angle " + str(gyro_sensor.angle()))
-    #    print("Left Motor Angle " + str(left_motor.angle()))
-    #    left_motor.run(135)
-    #left_motor.stop()
-
-    #left_motor.run_angle(200, 260, wait=True)
-    #right_motor.run_angle(200, -260, wait=True)
-
-    # while True:
-    #     while gyro_sensor.angle() > -2:
-    #         print(gyro_sensor.angle())
-    #         right_motor.run(350)
-    #     right_motor.stop()
-
-
-    #     while gyro_sensor.angle() < 2:
-    #         print(gyro_sensor.angle())
-    #         left_motor.run(180)
-    #     left_motor.stop()
-
-
-    print(gyro_sensor.angle())
-    #right_motor.run_angle(1000, 360, wait=False)
-    #left_motor.run_angle(500, 360, wait=True)
-
-    # angle of 123 produces a 90 turn
-    #robot.turn(123)
-
-    # angle of 243 produces a 180 turn
-    #robot.turn(243)
-
-    # gyro_offset = 0
-    # while True:
-    #     gyro_minimum_rate, gyro_maximum_rate = 440, -440
-    #     gyro_sum = 0
-    #     for _ in range(GYRO_CALIBRATION_LOOP_COUNT):
-    #         gyro_sensor_value = gyro_sensor.speed()
-    #         gyro_sum += gyro_sensor_value
-    #         if gyro_sensor_value > gyro_maximum_rate:
-    #             gyro_maximum_rate = gyro_sensor_value
-    #         if gyro_sensor_value < gyro_minimum_rate:
-    #             gyro_minimum_rate = gyro_sensor_value
-    #         wait(5)
-    #     if gyro_maximum_rate - gyro_minimum_rate < 2:
-    #         break
-    # gyro_offset = gyro_sum / GYRO_CALIBRATION_LOOP_COUNT
-
-
-    # Change the motor depending on the angle of the gyroscope to move in a straight line.
-    # Create a loop that will loop until target distance is reached by the robot (Must determine if the sum of the motor distance is the distance traveled)
-    # Each motor will need to rotate a determine amount then switch of and the other motor will rotate the same amount.
-    # This will continue until the robot as traveled the desired distance.
-
-    # MEASURING
-    # speed() - Gets the speed of the motor
-    # angle() - Gets the rotation angle of the motor
-    # reset_angle(angle) - Sets the accumulated rotation angle of the motor to a desired value (deg)
-
-    # STOPPING
-    # stop() - Stops the motor and lets it spin freely
-    # brake() - Passively brakes the motor
-    # hold() - Stops the motor and actively holds it at its current angle
-
-    # ACTION
-    # run(speed) - Runs the motor at a constant speed (deg/s)
-    # run_time(speed,time,then=Stop.HOLD, wait=True) - Runs the motor at a constant speed for a given amount of time
-    # run_angle(speed,rotation_angle,then=Stop.HOLD, wait=True) - Runs the motor at a constant speed by a given angle
-    # run_target(speed, target_angle, then=Stop.HOLD, wait=True) - Runs the motor at a constant speed towards a given target angle
-    # The direction of rotation is automatically selected based on the target angle. It does matter if speed is positive or negative.
-    # A redesign might be needed because of run_target.
+    # # move robot across the path
+    # for move in range(1,len(simplified_path)):
+    #     if(found_path[move][0] == found_path[move-1][0]):
+    #         desired_distance = found_path[move][1] - found_path[move-1][1]
+    #         if(desired_distance > 0): # move right
+    #             if(current_orientation != 0):
+    #                 if(current_orientation > 0):
+    #                     right_turn()
+    #                     correct_right_turn()
+    #                 else:
+    #                     left_turn()
+    #                     correct_left_turn()
+    #             move_forward(desired_distance)
+    #         else: # move left
+    #             if(current_orientation != 180):
+    #                 if(current_orientation > 180):
+    #                     right_turn()
+    #                     correct_right_turn()
+    #                 else:
+    #                     left_turn()
+    #                     correct_left_turn()
+    #             move_forward(-desired_distance)
+    #     elif(found_path[move][1] == found_path[move-1][1]):
+    #         desired_distance = found_path[move][0] - found_path[move-1][0]
+    #         if(desired_distance > 0): # move up
+    #             if(current_orientation != 90):
+    #                 if(current_orientation > 90):
+    #                     right_turn()
+    #                     correct_right_turn()
+    #                 else:
+    #                     left_turn()
+    #                     correct_left_turn()
+    #             move_forward(desired_distance)
+    #         else: # move down
+    #             if(current_orientation != 270):
+    #                 if(current_orientation > 270):
+    #                     right_turn()
+    #                     correct_right_turn()
+    #                 else:
+    #                     left_turn()
+    #                     correct_left_turn()
+    #             move_forward(-desired_distance)
 
 
 main()
